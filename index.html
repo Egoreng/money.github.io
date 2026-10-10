@@ -12,7 +12,9 @@
 <meta name="apple-mobile-web-app-title" content="Скинемся">
 <meta name="description" content="Калькулятор совместных расходов: делит траты и оставляет минимум переводов между друзьями. Работает офлайн, данные — только на вашем устройстве.">
 <meta name="format-detection" content="telephone=no">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0' stop-color='%234FA8FF'/%3E%3Cstop offset='1' stop-color='%23007AFF'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='15' fill='url(%23g)'/%3E%3Cpath d='M22 20h9.5a8.2 8.2 0 0 1 0 16.4H27' stroke='white' stroke-width='4.6' fill='none' stroke-linecap='round'/%3E%3Cpath d='M22 43V20' stroke='white' stroke-width='4.6' stroke-linecap='round'/%3E%3Cpath d='M18 30.5h12' stroke='white' stroke-width='4.2' stroke-linecap='round' stroke-opacity='.85'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0' stop-color='%234FA8FF'/%3E%3Cstop offset='1' stop-color='%23007AFF'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='15' fill='url(%23g)'/%3E%3Cpath d='M29.25 20h9.5a8.2 8.2 0 0 1 0 16.4H34.25' stroke='white' stroke-width='4.6' fill='none' stroke-linecap='round'/%3E%3Cpath d='M29.25 43V20' stroke='white' stroke-width='4.6' stroke-linecap='round'/%3E%3Cpath d='M25.25 30.5h12' stroke='white' stroke-width='4.2' stroke-linecap='round' stroke-opacity='.85'/%3E%3C/svg%3E">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <style>
 /* ============================================================
    Скинемся — design tokens
@@ -2031,7 +2033,7 @@ const Profile = {
     '<div class="p-hero">' +
       '<div class="p-logo">' + ico("users", "i") + '</div>' +
       '<div class="p-name">Скинемся</div>' +
-      '<div class="p-ver num">версия 1.0 · офлайн</div>' +
+      '<div class="p-ver num">версия 1.1 · офлайн</div>' +
     '</div>' +
     '<div class="p-stat">' +
       '<div><div class="ps-v num">' + recs + '</div><div class="ps-k">' + pluralRecords(recs) + ' в истории</div></div>' +
@@ -2059,6 +2061,15 @@ const Profile = {
     '</div>' +
 
     '<div class="set-group">' +
+      '<div class="set-title">Офлайн</div>' +
+      '<div class="set-body" style="padding-top:0">' +
+        '<div class="det-line"><span class="det-k">' + ico("bolt", "i-sm") + 'Кеш приложения</span><span class="det-v" id="pwaState">—</span></div>' +
+        '<div class="det-line"><span class="det-k">' + ico("auto", "i-sm") + 'Откроется без сети</span><span class="det-v">' + (PWA.status === "ready" ? "да" : "после запуска онлайн") + '</span></div>' +
+        '<button class="btn btn-ghost btn-wide" id="pwaCheck" style="margin-top:14px">Проверить обновление</button>' +
+      '</div>' +
+    '</div>' +
+
+    '<div class="set-group">' +
       '<div class="set-title">Что умеет</div>' +
       '<div class="set-body" style="padding-top:0">' +
         '<ul class="p-list">' +
@@ -2070,7 +2081,8 @@ const Profile = {
         '</ul>' +
       '</div>' +
     '</div>' +
-    '<p class="p-foot">Сделано как одностраничное приложение: один файл, работает офлайн,<br>добавляется на домашний экран как обычное приложение.</p>';
+    '<p class="p-foot">Одностраничное приложение: открывается без интернета,<br>ставится на домашний экран как обычное приложение.</p>';
+    PWA.paint();
   }
 };
 
@@ -2517,9 +2529,92 @@ function init() {
   state.dirty = false;
   go(state.screen || "calc");
   window.addEventListener("pagehide", () => persist("all"));
+  PWA.start();
 }
+/* ============================================================================
+   ОФЛАЙН: service worker + статус на экране «Инфо»
+
+   index.html остаётся полностью рабочим и без sw.js (например, если открыть
+   файлом с диска) — здесь только регистрация кеша и его статус.
+   ========================================================================== */
+const PWA = {
+  status: "unknown",       // ready | installing | unsupported | insecure | error
+  reg: null,
+  told: false,
+
+  async start() {
+    if (!("serviceWorker" in navigator)) { this.status = "unsupported"; this.paint(); return; }
+    /* Service worker требует защищённого контекста: https или localhost.
+       GitHub Pages отдаёт https, так что там всё ок. */
+    const host = location.hostname;
+    if (location.protocol !== "https:" && host !== "localhost" && host !== "127.0.0.1") {
+      this.status = "insecure"; this.paint(); return;
+    }
+    try {
+      this.reg = await navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" });
+      this.status = navigator.serviceWorker.controller ? "ready" : "installing";
+      this.paint();
+      if (this.reg.waiting && navigator.serviceWorker.controller) this.notifyUpdate();
+      this.reg.addEventListener("updatefound", () => {
+        const nw = this.reg.installing;
+        if (!nw) return;
+        nw.addEventListener("statechange", () => {
+          if (nw.state !== "installed") return;
+          this.status = "ready";
+          this.paint();
+          /* Контроллер уже был — значит это обновление, а не первая установка. */
+          if (navigator.serviceWorker.controller) this.notifyUpdate();
+        });
+      });
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        this.status = "ready";
+        this.paint();
+      });
+    } catch (e) {
+      this.status = "error";
+      this.paint();
+    }
+  },
+
+  notifyUpdate() {
+    if (this.told) return;
+    this.told = true;
+    Toast.show("Обновление установлено — откроется при следующем запуске", 3200);
+  },
+
+  async check() {
+    if (!this.reg) { Toast.show("Офлайн-кеш недоступен"); return; }
+    try {
+      await this.reg.update();
+      Toast.show(navigator.serviceWorker.controller ? "Установлена последняя версия" : "Кеш обновлён");
+    } catch (e) {
+      Toast.show("Проверить не удалось — похоже, вы офлайн", 2600);
+    }
+    this.paint();
+  },
+
+  paint() {
+    const el = document.getElementById("pwaState");
+    if (!el) return;
+    const map = {
+      ready: "готов",
+      installing: "идёт установка",
+      unsupported: "нет (браузер)",
+      insecure: "нет (нужен https)",
+      error: "не удалось",
+      unknown: "—"
+    };
+    el.textContent = map[this.status] || "—";
+  }
+};
+document.addEventListener("click", (e) => {
+  const btn = e.target && e.target.closest ? e.target.closest("#pwaCheck") : null;
+  if (btn) PWA.check();
+});
+
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
 else init();
 </script>
+<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v4bc70e2c01a94c73b74392e4234840661791215815920" integrity="sha512-L0ha0OXavK/8okipN9F8BtP84dg9DUhPERbBXzwI6dgTA55d2+yweo3pn5CSFYs45/r8md2+xvUPtTdvTNRfjA==" data-cf-beacon='{"version":"2024.11.0","token":"1954b47c125f43f8b4338b3c4f804e4f","spa":2}' crossorigin="anonymous"></script>
 </body>
 </html>
